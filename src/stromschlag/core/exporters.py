@@ -107,7 +107,14 @@ def _write_project_descriptors(
         IconDefinition(name=icon.name, source_path=icon.source_path, category=icon.category)
         for icon in icons
     ]
-    save_project(pack_root / "stromschlag.yaml", settings, icon_snapshot, include_categories=False)
+    save_project(
+        pack_root / "stromschlag.yaml",
+        settings,
+        icon_snapshot,
+        include_categories=False,
+        include_icons=False,
+        include_output_dir=False,
+    )
 
     for target in targets:
         themed_icons = [
@@ -125,14 +132,14 @@ def _write_project_descriptors(
             settings,
             themed_icons,
             include_categories=False,
+            include_icons=False,
+            include_output_dir=False,
         )
 
 
 _DEFAULT_ICON_DIRS: Tuple[Path, ...] = (
     Path.home() / ".local/share/icons",
-    Path.home() / ".icons",
     Path("/usr/share/icons"),
-    Path("/usr/local/share/icons"),
 )
 
 

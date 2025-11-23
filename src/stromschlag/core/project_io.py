@@ -45,6 +45,8 @@ def save_project(
     icons: Iterable[IconDefinition],
     *,
     include_categories: bool = True,
+    include_icons: bool = True,
+    include_output_dir: bool = True,
 ) -> None:
     """Persist the project as a YAML document."""
     payload = {
@@ -53,9 +55,14 @@ def save_project(
         "description": settings.description,
         "inherits": settings.inherits,
         "base_sizes": settings.base_sizes,
-        "output_dir": str(settings.output_dir),
         "targets": settings.targets,
-        "icons": [
+    }
+
+    if include_output_dir:
+        payload["output_dir"] = str(settings.output_dir)
+
+    if include_icons:
+        payload["icons"] = [
             {
                 "name": icon.name,
                 **(
@@ -70,8 +77,8 @@ def save_project(
                 ),
             }
             for icon in icons
-        ],
-    }
+        ]
+
     path.parent.mkdir(parents=True, exist_ok=True)
     yaml_text = yaml.safe_dump(payload, sort_keys=False)
     path.write_text(f"{_PROJECT_HEADER}{yaml_text}")

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Sequence
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QPixmap, QShortcut
@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
         self._metadata_confirmed = False
         self._project_loaded = False
         self._last_export_result: ExportResult | None = None
+        self._artwork_library: List[IconDefinition] = []
         self._settings_store = QSettings("Stromschlag", "Stromschlag")
         self._recent_projects: List[str] = []
         self._recent_menu: QMenu | None = None
@@ -97,7 +98,8 @@ class MainWindow(QMainWindow):
         self._icon_source_path_display = QLineEdit()
         self._icon_source_path_display.setReadOnly(True)
         self._icon_source_path_display.setPlaceholderText("No artwork selected")
-        self._icon_choose_artwork_button = QPushButton("Choose artwork…")
+        self._icon_choose_artwork_button = QPushButton("Choose file…")
+        self._icon_choose_theme_button = QPushButton("From base theme…")
         self._icon_apply_button = QPushButton("Save name")
         self._suppress_form_updates = False
         self._icon_name_edit.editingFinished.connect(self._handle_name_commit)
@@ -105,12 +107,10 @@ class MainWindow(QMainWindow):
         self._pack_name_edit = QLineEdit()
         self._pack_author_edit = QLineEdit()
         self._pack_inherits_edit = QLineEdit()
-        self._pack_targets_edit = QLineEdit()
         for field, placeholder in (
             (self._pack_name_edit, "Pack name"),
             (self._pack_author_edit, "Author"),
             (self._pack_inherits_edit, "Base theme"),
-            (self._pack_targets_edit, "Targets (comma separated)"),
         ):
             field.setPlaceholderText(placeholder)
             field.setEnabled(False)
@@ -252,6 +252,8 @@ class MainWindow(QMainWindow):
         artwork_row.addWidget(self._icon_source_path_display)
         self._icon_choose_artwork_button.clicked.connect(self._choose_icon_file)
         artwork_row.addWidget(self._icon_choose_artwork_button)
+        self._icon_choose_theme_button.clicked.connect(self._choose_icon_from_theme)
+        artwork_row.addWidget(self._icon_choose_theme_button)
         form.addRow("Artwork", artwork_row)
 
         self._icon_apply_button.clicked.connect(self._apply_icon_changes)
@@ -267,7 +269,6 @@ class MainWindow(QMainWindow):
         metadata_form.addRow("Name", self._pack_name_edit)
         metadata_form.addRow("Author", self._pack_author_edit)
         metadata_form.addRow("Base theme", self._pack_inherits_edit)
-        metadata_form.addRow("Targets", self._pack_targets_edit)
         layout.addWidget(metadata_group)
         layout.addStretch()
 
@@ -462,6 +463,7 @@ class MainWindow(QMainWindow):
     def _show_placeholder(self) -> None:
         self._project_loaded = False
         self._last_export_result = None
+        self._artwork_library = []
         self._stack.setCurrentWidget(self._placeholder_view)
         self._update_action_states()
         self._icon_tree.clear()
@@ -516,6 +518,7 @@ class MainWindow(QMainWindow):
         )
         self._metadata_confirmed = False
         self._icons = icons
+        self._set_artwork_library(icons)
         self._last_export_result = None
         self._show_project_view()
         self._announce_theme_source(source_theme)
@@ -546,18 +549,31 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # pragma: no cover - filesystem errors
             QMessageBox.critical(self, "Unable to open project", str(exc))
             return
-        self._settings = settings
-        self._metadata_confirmed = True
-        self._icons = icons
-        self._last_export_result = None
-        self._show_project_view()
-        self._record_recent_project(path.parent)
+        self._apply_loaded_project(
+            settings,
+            icons,
+            metadata_confirmed=True,
+            record_path=path.parent,
+        )
 
     def _load_project_from_directory(self, directory: Path) -> None:
         descriptor = self._discover_descriptor(directory)
+        fallback_settings: PackSettings | None = None
         if descriptor:
-            self._load_project_file(descriptor)
-            return
+            try:
+                loaded_settings, loaded_icons = load_project(descriptor)
+            except Exception as exc:  # pragma: no cover - filesystem errors
+                QMessageBox.critical(self, "Unable to open project", str(exc))
+                return
+            if loaded_icons:
+                self._apply_loaded_project(
+                    loaded_settings,
+                    loaded_icons,
+                    metadata_confirmed=True,
+                    record_path=descriptor.parent,
+                )
+                return
+            fallback_settings = loaded_settings
         settings, icons = self._build_project_from_directory(directory)
         if not icons:
             QMessageBox.information(
@@ -566,12 +582,19 @@ class MainWindow(QMainWindow):
                 "The selected folder does not contain any usable icon files.",
             )
             return
-        self._settings = settings
-        self._metadata_confirmed = False
-        self._icons = icons
-        self._last_export_result = None
-        self._show_project_view()
-        self._record_recent_project(directory)
+        if fallback_settings is not None:
+            settings.name = fallback_settings.name or settings.name
+            settings.author = fallback_settings.author or settings.author
+            settings.description = fallback_settings.description or settings.description
+            settings.inherits = fallback_settings.inherits or settings.inherits
+            settings.base_sizes = fallback_settings.base_sizes or settings.base_sizes
+            settings.targets = fallback_settings.targets or settings.targets
+        self._apply_loaded_project(
+            settings,
+            icons,
+            metadata_confirmed=fallback_settings is not None,
+            record_path=directory,
+        )
         self.statusBar().showMessage(
             f"Imported {len(icons)} icons from '{directory}'.",
             5000,
@@ -583,6 +606,29 @@ class MainWindow(QMainWindow):
                 f"Loaded icons from '{theme_name}'.",
                 5000,
             )
+
+    def _apply_loaded_project(
+        self,
+        settings: PackSettings,
+        icons: List[IconDefinition],
+        *,
+        metadata_confirmed: bool,
+        record_path: Path,
+    ) -> None:
+        self._settings = settings
+        self._metadata_confirmed = metadata_confirmed
+        self._icons = icons
+        self._set_artwork_library(icons)
+        self._last_export_result = None
+        self._show_project_view()
+        self._record_recent_project(record_path)
+
+    def _set_artwork_library(self, icons: Iterable[IconDefinition]) -> None:
+        self._artwork_library = [
+            IconDefinition(name=icon.name, source_path=icon.source_path, category=icon.category)
+            for icon in icons
+            if icon.source_path and icon.source_path.exists()
+        ]
 
     # ------------------------------------------------------------------
     # Icon manipulation
@@ -738,6 +784,7 @@ class MainWindow(QMainWindow):
             self._icon_name_edit,
             self._icon_source_path_display,
             self._icon_choose_artwork_button,
+            self._icon_choose_theme_button,
             self._icon_apply_button,
         ):
             widget.setEnabled(enabled)
@@ -747,7 +794,6 @@ class MainWindow(QMainWindow):
             self._pack_name_edit,
             self._pack_author_edit,
             self._pack_inherits_edit,
-            self._pack_targets_edit,
         ):
             widget.setEnabled(enabled)
 
@@ -757,15 +803,11 @@ class MainWindow(QMainWindow):
             self._pack_name_edit.setText(self._settings.name)
             self._pack_author_edit.setText(self._settings.author)
             self._pack_inherits_edit.setText(self._settings.inherits)
-            self._pack_targets_edit.setText(
-                ", ".join(self._settings.targets) if self._settings.targets else ""
-            )
         else:
             for field in (
                 self._pack_name_edit,
                 self._pack_author_edit,
                 self._pack_inherits_edit,
-                self._pack_targets_edit,
             ):
                 field.clear()
         self._suppress_metadata_updates = False
@@ -776,14 +818,9 @@ class MainWindow(QMainWindow):
         name = self._pack_name_edit.text().strip() or "Untitled Icon Pack"
         author = self._pack_author_edit.text().strip() or "Unknown"
         inherits = self._pack_inherits_edit.text().strip() or "hicolor"
-        raw_targets = self._pack_targets_edit.text().replace(";", ",")
-        targets = [part.strip() for part in raw_targets.split(",") if part.strip()]
-        if not targets:
-            targets = ["gnome", "kde"]
         self._settings.name = name
         self._settings.author = author
         self._settings.inherits = inherits
-        self._settings.targets = targets
         self._metadata_confirmed = True
         self._update_metadata_panel()
 
@@ -807,7 +844,40 @@ class MainWindow(QMainWindow):
         path = Path(path_str)
         icon.source_path = path
         self._icon_source_path_display.setText(str(path))
-        self._preview_label.setPixmap(self._icon_pixmap(icon, 360))
+        pixmap = self._icon_pixmap(icon, 360)
+        if pixmap is not None:
+            self._preview_label.setText("")
+            self._preview_label.setPixmap(pixmap)
+        else:
+            self._preview_label.setPixmap(QPixmap())
+            self._preview_label.setText("No preview available for this asset.")
+        self._refresh_icon_list(row)
+
+    def _choose_icon_from_theme(self) -> None:
+        row = self._current_row()
+        if row < 0:
+            return
+        candidates = [icon for icon in self._artwork_library if icon.source_path and icon.source_path.exists()]
+        if not candidates:
+            QMessageBox.information(
+                self,
+                "No theme artwork",
+                "This project does not have a base theme library to browse.",
+            )
+            return
+        selection = ThemeArtworkDialog.prompt(self, candidates)
+        if selection is None:
+            return
+        icon = self._icons[row]
+        icon.source_path = selection
+        self._icon_source_path_display.setText(str(selection))
+        pixmap = self._icon_pixmap(icon, 360)
+        if pixmap is not None:
+            self._preview_label.setText("")
+            self._preview_label.setPixmap(pixmap)
+        else:
+            self._preview_label.setPixmap(QPixmap())
+            self._preview_label.setText("No preview available for this asset.")
         self._refresh_icon_list(row)
 
     def _handle_name_commit(self) -> None:
@@ -879,7 +949,6 @@ class MainWindow(QMainWindow):
             title="Install for current user",
             install_roots=[
                 Path.home() / ".local/share/icons",
-                Path.home() / ".icons",
             ],
         )
 
@@ -888,7 +957,6 @@ class MainWindow(QMainWindow):
             title="Install system-wide",
             install_roots=[
                 Path("/usr/share/icons"),
-                Path("/usr/local/share/icons"),
             ],
         )
 
@@ -1186,6 +1254,99 @@ class BaseThemeDialog(QDialog):
         self._list.addItem(item)
         self._list.setCurrentItem(item)
         self._selected_path = path
-        if not self._inherits_edit.text().strip():
-            self._inherits_edit.setText(path.name)
+
+
+class ThemeArtworkDialog(QDialog):
+    """Dialog that lets the user pick artwork from the base theme library."""
+
+    def __init__(self, parent: QWidget | None, icons: Sequence[IconDefinition]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Choose artwork from base theme")
+        self.resize(640, 560)
+
+        self._icons = [icon for icon in icons if icon.source_path]
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search theme icons…")
+        self._search_edit.textChanged.connect(self._apply_filter)
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._populate_items()
+        self._list.itemActivated.connect(self._handle_item_activated)
+
+        self._status_label = QLabel()
+        self._status_label.setStyleSheet("color: #666666;")
+        self._update_status()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._handle_accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._search_edit)
+        layout.addWidget(self._list)
+        layout.addWidget(self._status_label)
+        layout.addWidget(buttons)
+
+        self._selection: Path | None = None
+
+    @staticmethod
+    def prompt(parent: QWidget | None, icons: Sequence[IconDefinition]) -> Path | None:
+        dialog = ThemeArtworkDialog(parent, icons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            return dialog._selection
+        return None
+
+    def _populate_items(self) -> None:
+        self._list.clear()
+        for icon in self._icons:
+            source = icon.source_path
+            if source is None:
+                continue
+            label = icon.name or source.stem
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(source))
+            if icon.category:
+                item.setToolTip(f"{label}\nCategory: {icon.category}\n{source}")
+            else:
+                item.setToolTip(str(source))
+            qicon = QIcon(str(source))
+            if not qicon.isNull():
+                item.setIcon(qicon)
+            self._list.addItem(item)
+
+    def _apply_filter(self, text: str) -> None:
+        term = text.strip().lower()
+        for index in range(self._list.count()):
+            item = self._list.item(index)
+            haystack = " ".join(
+                filter(
+                    None,
+                    [
+                        item.text().lower(),
+                        str(item.data(Qt.ItemDataRole.UserRole)).lower(),
+                    ],
+                )
+            )
+            item.setHidden(bool(term) and term not in haystack)
+        self._update_status()
+
+    def _handle_item_activated(self, item: QListWidgetItem | None) -> None:
+        if item is None:
+            return
+        self._selection = Path(str(item.data(Qt.ItemDataRole.UserRole)))
+        self.accept()
+
+    def _handle_accept(self) -> None:
+        item = self._list.currentItem()
+        if item is None or item.isHidden():
+            QMessageBox.information(self, "Select artwork", "Choose an icon from the list before continuing.")
+            return
+        self._selection = Path(str(item.data(Qt.ItemDataRole.UserRole)))
+        self.accept()
+
+    def _update_status(self) -> None:
+        visible = sum(1 for idx in range(self._list.count()) if not self._list.item(idx).isHidden())
+        total = self._list.count()
+        self._status_label.setText(f"Showing {visible} of {total} icons")
 

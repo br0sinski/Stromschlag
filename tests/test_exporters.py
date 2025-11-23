@@ -79,16 +79,16 @@ def test_export_writes_project_descriptors(tmp_path: Path) -> None:
     descriptor = result.pack_root / "stromschlag.yaml"
     assert descriptor.exists()
     data = yaml.safe_load(descriptor.read_text())
-    assert data["icons"][0]["name"] == "app"
-    assert "category" not in data["icons"][0]
+    assert data["name"] == "Pack"
+    assert "output_dir" not in data
+    assert "icons" not in data
 
     kde_descriptor = result.pack_root / "kde" / settings.name / "stromschlag.yaml"
     assert kde_descriptor.exists()
     kde_data = yaml.safe_load(kde_descriptor.read_text())
-    path_value = Path(kde_data["icons"][0]["source_path"])
-    assert path_value.exists()
-    assert path_value.name == "app.png"
-    assert "category" not in kde_data["icons"][0]
+    assert kde_data["name"] == "Pack"
+    assert "output_dir" not in kde_data
+    assert "icons" not in kde_data
 
 
 def test_install_icon_pack_copies_targets(tmp_path: Path) -> None:
