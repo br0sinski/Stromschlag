@@ -1,6 +1,8 @@
 """Tests for exporter behavior."""
 from pathlib import Path
 
+import yaml
+
 from stromschlag.core.exporters import export_icon_pack
 from stromschlag.core.models import IconDefinition, PackSettings
 
@@ -62,3 +64,28 @@ def test_export_honors_selected_targets(tmp_path: Path) -> None:
     kde_icon = target / "kde" / settings.name / "32x32" / "apps" / "app.png"
     assert kde_icon.exists()
     assert not (target / "gnome").exists()
+
+
+def test_export_writes_project_descriptors(tmp_path: Path) -> None:
+    build_dir = tmp_path / "build"
+    settings = PackSettings(name="Pack", author="Tester", base_sizes=[32], output_dir=build_dir)
+    source = tmp_path / "app.png"
+    _make_icon_file(source, "#00ff00")
+
+    icon = IconDefinition(name="app", source_path=source, category="apps")
+
+    target = export_icon_pack(settings, [icon])
+
+    descriptor = target / "stromschlag.yaml"
+    assert descriptor.exists()
+    data = yaml.safe_load(descriptor.read_text())
+    assert data["icons"][0]["name"] == "app"
+    assert "category" not in data["icons"][0]
+
+    kde_descriptor = target / "kde" / settings.name / "stromschlag.yaml"
+    assert kde_descriptor.exists()
+    kde_data = yaml.safe_load(kde_descriptor.read_text())
+    path_value = Path(kde_data["icons"][0]["source_path"])
+    assert path_value.exists()
+    assert path_value.name == "app.png"
+    assert "category" not in kde_data["icons"][0]

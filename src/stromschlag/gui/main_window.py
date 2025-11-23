@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, List
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenuBar,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from ..core.exporters import export_icon_pack
 from ..core.models import IconDefinition, PackSettings
-from ..core.project_io import load_project, save_project
+from ..core.project_io import load_project
 from ..core.theme_loader import (
     ThemeCandidate,
     load_icon_blueprint,
@@ -68,10 +69,14 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self._icons: List[IconDefinition] = []
-        self._project_path: Path | None = None
         self._settings: PackSettings | None = None
         self._metadata_confirmed = False
         self._project_loaded = False
+        self._settings_store = QSettings("Stromschlag", "Stromschlag")
+        self._recent_projects: List[str] = []
+        self._recent_menu: QMenu | None = None
+        self._recent_list: QListWidget | None = None
+        self._recent_placeholder_label: QLabel | None = None
 
         # Project UI widgets created up front
         self._icon_tree = QTreeWidget()
@@ -79,6 +84,12 @@ class MainWindow(QMainWindow):
         self._icon_tree.setAnimated(True)
         self._category_nodes: dict[str, QTreeWidgetItem] = {}
         self._row_to_item: List[QTreeWidgetItem | None] = []
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Search icons…")
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.textChanged.connect(self._handle_filter_change)
+        self._filter_edit.setEnabled(False)
+        self._filter_text = ""
         self._preview_label = QLabel()
         self._icon_name_edit = QLineEdit()
         self._icon_name_edit.setPlaceholderText("Logical icon name (e.g., firefox)")
@@ -90,6 +101,21 @@ class MainWindow(QMainWindow):
         self._suppress_form_updates = False
         self._icon_name_edit.editingFinished.connect(self._handle_name_commit)
 
+        self._pack_name_edit = QLineEdit()
+        self._pack_author_edit = QLineEdit()
+        self._pack_inherits_edit = QLineEdit()
+        self._pack_targets_edit = QLineEdit()
+        for field, placeholder in (
+            (self._pack_name_edit, "Pack name"),
+            (self._pack_author_edit, "Author"),
+            (self._pack_inherits_edit, "Base theme"),
+            (self._pack_targets_edit, "Targets (comma separated)"),
+        ):
+            field.setPlaceholderText(placeholder)
+            field.setEnabled(False)
+            field.editingFinished.connect(self._handle_metadata_field_commit)
+        self._suppress_metadata_updates = False
+
         self._stack = QStackedWidget()
         self._placeholder_view = self._build_placeholder_view()
         self._project_view = self._build_project_view()
@@ -97,8 +123,15 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._project_view)
         self.setCentralWidget(self._stack)
 
+        self._find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        self._find_shortcut.activated.connect(self._focus_filter_box)
+
+        self._load_recent_projects()
+        self._refresh_recent_ui()
+
         self._create_actions()
         self._create_menus()
+        self._refresh_recent_ui()
         self._show_placeholder()
 
     # ------------------------------------------------------------------
@@ -121,13 +154,29 @@ class MainWindow(QMainWindow):
         button_row = QHBoxLayout()
         new_button = QPushButton("Create new project")
         new_button.clicked.connect(self._new_project)
-        open_button = QPushButton("Open project…")
-        open_button.clicked.connect(self._open_project)
+        open_folder_button = QPushButton("Open folder…")
+        open_folder_button.clicked.connect(self._open_project_folder)
         button_row.addStretch()
         button_row.addWidget(new_button)
-        button_row.addWidget(open_button)
+        button_row.addWidget(open_folder_button)
         button_row.addStretch()
         layout.addLayout(button_row)
+        layout.addSpacing(24)
+
+        recent_label = QLabel("Recent projects")
+        recent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        recent_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(recent_label)
+
+        self._recent_list = QListWidget()
+        self._recent_list.itemActivated.connect(self._handle_recent_item_activation)
+        layout.addWidget(self._recent_list)
+
+        self._recent_placeholder_label = QLabel("No recent projects yet.")
+        self._recent_placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._recent_placeholder_label.setStyleSheet("color: #666666;")
+        layout.addWidget(self._recent_placeholder_label)
+
         layout.addStretch()
         return widget
 
@@ -151,6 +200,8 @@ class MainWindow(QMainWindow):
         header.setStyleSheet("font-weight: bold;")
         layout.addWidget(header)
 
+        layout.addWidget(self._filter_edit)
+
         self._icon_tree.currentItemChanged.connect(self._handle_tree_selection)
         self._icon_tree.itemDoubleClicked.connect(self._handle_tree_double_click)
         layout.addWidget(self._icon_tree)
@@ -166,6 +217,18 @@ class MainWindow(QMainWindow):
         layout.addLayout(button_row)
         return panel
 
+    def _handle_filter_change(self, text: str) -> None:
+        self._filter_text = text.strip()
+        if not self._project_loaded:
+            return
+        self._refresh_icon_list()
+
+    def _focus_filter_box(self) -> None:
+        if not self._project_loaded:
+            return
+        self._filter_edit.setFocus()
+        self._filter_edit.selectAll()
+
     def _build_preview_panel(self) -> QWidget:
         panel = QGroupBox("Canvas preview")
         layout = QVBoxLayout(panel)
@@ -177,8 +240,11 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_icon_detail_panel(self) -> QWidget:
-        panel = QGroupBox("Icon options")
-        form = QFormLayout(panel)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        icon_group = QGroupBox("Icon options")
+        form = QFormLayout(icon_group)
         form.addRow("Name", self._icon_name_edit)
 
         artwork_row = QHBoxLayout()
@@ -193,21 +259,26 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self._icon_apply_button)
         form.addRow(button_row)
 
+        layout.addWidget(icon_group)
+
+        metadata_group = QGroupBox("Pack metadata")
+        metadata_form = QFormLayout(metadata_group)
+        metadata_form.addRow("Name", self._pack_name_edit)
+        metadata_form.addRow("Author", self._pack_author_edit)
+        metadata_form.addRow("Base theme", self._pack_inherits_edit)
+        metadata_form.addRow("Targets", self._pack_targets_edit)
+        layout.addWidget(metadata_group)
+        layout.addStretch()
+
         self._set_icon_form_enabled(False)
-        return panel
+        return container
 
     def _create_actions(self) -> None:
         self._new_action = QAction("New Project", self)
         self._new_action.triggered.connect(self._new_project)
 
-        self._open_action = QAction("Open Project…", self)
-        self._open_action.triggered.connect(self._open_project)
-
-        self._save_action = QAction("Save Project", self)
-        self._save_action.triggered.connect(self._save_project)
-
-        self._save_as_action = QAction("Save Project As…", self)
-        self._save_as_action.triggered.connect(self._save_project_as)
+        self._open_folder_action = QAction("Open Folder…", self)
+        self._open_folder_action.triggered.connect(self._open_project_folder)
 
         self._metadata_action = QAction("Edit Metadata…", self)
         self._metadata_action.triggered.connect(self._edit_metadata)
@@ -219,16 +290,162 @@ class MainWindow(QMainWindow):
         menubar: QMenuBar = self.menuBar()
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(self._new_action)
-        file_menu.addAction(self._open_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self._save_action)
-        file_menu.addAction(self._save_as_action)
+        file_menu.addAction(self._open_folder_action)
+        self._recent_menu = file_menu.addMenu("Open Recent")
         file_menu.addSeparator()
         file_menu.addAction(self._export_action)
 
         options_menu = menubar.addMenu("&Options")
         options_menu.addAction(self._metadata_action)
         self._update_action_states()
+
+    # ------------------------------------------------------------------
+    # Recent project helpers
+    def _load_recent_projects(self) -> None:
+        stored = self._settings_store.value("recentProjects", [])
+        if isinstance(stored, str):
+            entries = [stored]
+        elif isinstance(stored, (list, tuple)):
+            entries = [str(item) for item in stored]
+        else:
+            entries = []
+        self._recent_projects = [entry for entry in entries if entry][:10]
+
+    def _persist_recent_projects(self) -> None:
+        self._settings_store.setValue("recentProjects", self._recent_projects)
+
+    def _refresh_recent_ui(self) -> None:
+        if self._recent_list is not None and self._recent_placeholder_label is not None:
+            self._recent_list.blockSignals(True)
+            self._recent_list.clear()
+            if self._recent_projects:
+                for path in self._recent_projects:
+                    item = QListWidgetItem(path)
+                    item.setData(Qt.ItemDataRole.UserRole, path)
+                    self._recent_list.addItem(item)
+                self._recent_list.setVisible(True)
+                self._recent_placeholder_label.setVisible(False)
+            else:
+                self._recent_list.setVisible(False)
+                self._recent_placeholder_label.setVisible(True)
+            self._recent_list.blockSignals(False)
+
+        if self._recent_menu is not None:
+            self._recent_menu.clear()
+            if not self._recent_projects:
+                self._recent_menu.setEnabled(False)
+            else:
+                self._recent_menu.setEnabled(True)
+                for path in self._recent_projects:
+                    action = self._recent_menu.addAction(path)
+                    action.setData(path)
+                    action.triggered.connect(self._handle_recent_action)
+                self._recent_menu.addSeparator()
+                clear_action = self._recent_menu.addAction("Clear Recent")
+                clear_action.triggered.connect(self._clear_recent_projects)
+
+    def _record_recent_project(self, path: Path) -> None:
+        target = path if path.is_dir() else path.parent
+        path_str = str(target)
+        updated = [path_str]
+        for existing in self._recent_projects:
+            if existing != path_str:
+                updated.append(existing)
+        self._recent_projects = updated[:10]
+        self._persist_recent_projects()
+        self._refresh_recent_ui()
+
+    def _handle_recent_item_activation(self, item: QListWidgetItem | None) -> None:
+        if item is None:
+            return
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        self._open_recent_project(Path(str(path)))
+
+    def _handle_recent_action(self) -> None:
+        action = self.sender()
+        if not isinstance(action, QAction):
+            return
+        path = action.data()
+        if not path:
+            return
+        self._open_recent_project(Path(str(path)))
+
+    def _open_recent_project(self, path: Path) -> None:
+        if not path.exists():
+            QMessageBox.warning(self, "Missing project", f"The project '{path}' no longer exists.")
+            self._remove_recent_entry(str(path))
+            return
+        self._load_project_from_path(path)
+
+    def _remove_recent_entry(self, path_str: str) -> None:
+        updated = [entry for entry in self._recent_projects if entry != path_str]
+        if updated == self._recent_projects:
+            return
+        self._recent_projects = updated
+        self._persist_recent_projects()
+        self._refresh_recent_ui()
+
+    def _clear_recent_projects(self) -> None:
+        if not self._recent_projects:
+            return
+        self._recent_projects = []
+        self._persist_recent_projects()
+        self._refresh_recent_ui()
+
+    def _discover_descriptor(self, directory: Path) -> Path | None:
+        preferred = directory / "stromschlag.yaml"
+        if preferred.exists():
+            return preferred
+        fallback = directory / "Stromschlag.yaml"
+        if fallback.exists():
+            return fallback
+        for candidate in directory.glob("**/stromschlag.yaml"):
+            return candidate
+        return None
+
+    def _build_project_from_directory(self, directory: Path) -> tuple[PackSettings, List[IconDefinition]]:
+        entries = self._collect_icon_sources(directory)
+        icons = [
+            IconDefinition(name=name, source_path=path, category=category)
+            for name, path, category in entries
+        ]
+        settings = PackSettings(
+            name=directory.name or "Imported Icon Pack",
+            author="Imported",
+            inherits="hicolor",
+            output_dir=directory.parent,
+        )
+        return settings, icons
+
+    def _collect_icon_sources(self, directory: Path) -> List[tuple[str, Path, str | None]]:
+        allowed = {".png", ".svg", ".svgz"}
+        winners: dict[str, tuple[int, Path, str | None]] = {}
+        for file_path in sorted(directory.rglob("*")):
+            if not file_path.is_file():
+                continue
+            suffix = file_path.suffix.lower()
+            if suffix not in allowed:
+                continue
+            name = file_path.stem
+            normalized_parts = {part.lower() for part in file_path.parts}
+            weight = 0
+            if suffix not in {".svg", ".svgz"}:
+                weight += 1
+            if "scalable" not in normalized_parts:
+                weight += 2
+            if "apps" not in normalized_parts and "mimetypes" not in normalized_parts:
+                weight += 1
+            existing = winners.get(name)
+            if existing and existing[0] <= weight:
+                continue
+            category = file_path.parent.name if file_path.parent != directory else None
+            winners[name] = (weight, file_path, category)
+        return [
+            (name, data[1], data[2])
+            for name, data in sorted(winners.items(), key=lambda item: item[0])
+        ]
 
     # ------------------------------------------------------------------
     # Project lifecycle
@@ -239,18 +456,28 @@ class MainWindow(QMainWindow):
         self._icon_tree.clear()
         self._category_nodes.clear()
         self._row_to_item = []
+        self._filter_edit.clear()
+        self._filter_edit.setEnabled(False)
+        self._filter_text = ""
         self._preview_label.clear()
         self._set_icon_form_enabled(False)
+        self._set_metadata_form_enabled(False)
+        self._update_metadata_panel()
 
     def _show_project_view(self) -> None:
         self._project_loaded = True
         self._stack.setCurrentWidget(self._project_view)
         self._update_action_states()
+        self._filter_edit.clear()
+        self._filter_text = ""
+        self._filter_edit.setEnabled(True)
+        self._set_metadata_form_enabled(True)
+        self._update_metadata_panel()
         self._refresh_icon_list()
 
     def _update_action_states(self) -> None:
         state = self._project_loaded
-        for action in (self._save_action, self._save_as_action, self._metadata_action, self._export_action):
+        for action in (self._metadata_action, self._export_action):
             action.setEnabled(state)
 
     def _new_project(self) -> None:
@@ -265,7 +492,6 @@ class MainWindow(QMainWindow):
             return
         icons, source_theme, inherits, targets = result
 
-        self._project_path = None
         self._settings = PackSettings(
             name="Untitled Icon Pack",
             author="Unknown",
@@ -277,26 +503,60 @@ class MainWindow(QMainWindow):
         self._show_project_view()
         self._announce_theme_source(source_theme)
 
-    def _open_project(self) -> None:
-        path_str, _ = QFileDialog.getOpenFileName(
+    def _open_project_folder(self) -> None:
+        path_str = QFileDialog.getExistingDirectory(
             self,
-            "Open Stromschlag project",
+            "Select project folder",
             str(Path.home()),
-            "Stromschlag Projects (*.yaml *.yml)"
         )
         if not path_str:
             return
-        path = Path(path_str)
+        self._load_project_from_path(Path(path_str))
+
+    def _load_project_from_path(self, path: Path) -> None:
+        if not path.exists():
+            QMessageBox.warning(self, "Missing project", f"The path '{path}' does not exist.")
+            self._remove_recent_entry(str(path))
+            return
+        if path.is_dir():
+            self._load_project_from_directory(path)
+            return
+        self._load_project_file(path)
+
+    def _load_project_file(self, path: Path) -> None:
         try:
             settings, icons = load_project(path)
         except Exception as exc:  # pragma: no cover - filesystem errors
             QMessageBox.critical(self, "Unable to open project", str(exc))
             return
-        self._project_path = path
         self._settings = settings
         self._metadata_confirmed = True
         self._icons = icons
         self._show_project_view()
+        self._record_recent_project(path.parent)
+
+    def _load_project_from_directory(self, directory: Path) -> None:
+        descriptor = self._discover_descriptor(directory)
+        if descriptor:
+            self._load_project_file(descriptor)
+            return
+        settings, icons = self._build_project_from_directory(directory)
+        if not icons:
+            QMessageBox.information(
+                self,
+                "No icons found",
+                "The selected folder does not contain any usable icon files.",
+            )
+            return
+        self._settings = settings
+        self._metadata_confirmed = False
+        self._icons = icons
+        self._show_project_view()
+        self._record_recent_project(directory)
+        self.statusBar().showMessage(
+            f"Imported {len(icons)} icons from '{directory}'.",
+            5000,
+        )
 
     def _announce_theme_source(self, theme_name: str | None) -> None:
         if theme_name:
@@ -305,41 +565,6 @@ class MainWindow(QMainWindow):
                 5000,
             )
 
-    def _save_project(self) -> None:
-        if not self._project_loaded or not self._settings:
-            return
-        if not self._project_path:
-            self._save_project_as()
-            return
-        try:
-            save_project(self._project_path, self._settings, self._icons)
-        except Exception as exc:  # pragma: no cover - filesystem errors
-            QMessageBox.critical(self, "Save failed", str(exc))
-            return
-        QMessageBox.information(self, "Project saved", f"Saved to {self._project_path}")
-
-    def _save_project_as(self) -> None:
-        if not self._settings:
-            return
-        path_str, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Stromschlag project",
-            str(self._project_path or Path.home()),
-            "Stromschlag Projects (*.yaml)"
-        )
-        if not path_str:
-            return
-        path = Path(path_str)
-        if path.suffix.lower() not in {".yaml", ".yml"}:
-            path = path.with_suffix(".yaml")
-        try:
-            save_project(path, self._settings, self._icons)
-        except Exception as exc:  # pragma: no cover
-            QMessageBox.critical(self, "Save failed", str(exc))
-            return
-        self._project_path = path
-        QMessageBox.information(self, "Project saved", f"Saved to {path}")
-
     # ------------------------------------------------------------------
     # Icon manipulation
     def _refresh_icon_list(self, select_index: int | None = None) -> None:
@@ -347,8 +572,12 @@ class MainWindow(QMainWindow):
         self._icon_tree.clear()
         self._category_nodes.clear()
         self._row_to_item = [None] * len(self._icons)
+        filter_text = (self._filter_text or "").lower()
+        matching_indices: List[int] = []
 
         for idx, icon in enumerate(self._icons):
+            if filter_text and filter_text not in icon.name.lower():
+                continue
             category_key = (icon.category or "other").lower()
             parent = self._category_nodes.get(category_key)
             if parent is None:
@@ -364,6 +593,7 @@ class MainWindow(QMainWindow):
                 child.setIcon(0, QIcon(pixmap))
             parent.addChild(child)
             self._row_to_item[idx] = child
+            matching_indices.append(idx)
 
         self._icon_tree.expandAll()
         self._icon_tree.blockSignals(False)
@@ -372,8 +602,17 @@ class MainWindow(QMainWindow):
             self._handle_selection_change(-1)
             return
 
-        target = select_index if select_index is not None else 0
-        target = max(0, min(target, len(self._icons) - 1))
+        if not matching_indices:
+            self._icon_tree.setCurrentItem(None)
+            self._handle_selection_change(-1)
+            self._preview_label.setPixmap(QPixmap())
+            self._preview_label.setText("No icons match the current search.")
+            return
+
+        if select_index is not None and select_index in matching_indices:
+            target = select_index
+        else:
+            target = matching_indices[0]
         self._select_row(target)
 
     def _category_display_name(self, key: str) -> str:
@@ -484,6 +723,51 @@ class MainWindow(QMainWindow):
         ):
             widget.setEnabled(enabled)
 
+    def _set_metadata_form_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self._pack_name_edit,
+            self._pack_author_edit,
+            self._pack_inherits_edit,
+            self._pack_targets_edit,
+        ):
+            widget.setEnabled(enabled)
+
+    def _update_metadata_panel(self) -> None:
+        self._suppress_metadata_updates = True
+        if self._project_loaded and self._settings is not None:
+            self._pack_name_edit.setText(self._settings.name)
+            self._pack_author_edit.setText(self._settings.author)
+            self._pack_inherits_edit.setText(self._settings.inherits)
+            self._pack_targets_edit.setText(
+                ", ".join(self._settings.targets) if self._settings.targets else ""
+            )
+        else:
+            for field in (
+                self._pack_name_edit,
+                self._pack_author_edit,
+                self._pack_inherits_edit,
+                self._pack_targets_edit,
+            ):
+                field.clear()
+        self._suppress_metadata_updates = False
+
+    def _handle_metadata_field_commit(self) -> None:
+        if self._suppress_metadata_updates or not self._project_loaded or self._settings is None:
+            return
+        name = self._pack_name_edit.text().strip() or "Untitled Icon Pack"
+        author = self._pack_author_edit.text().strip() or "Unknown"
+        inherits = self._pack_inherits_edit.text().strip() or "hicolor"
+        raw_targets = self._pack_targets_edit.text().replace(";", ",")
+        targets = [part.strip() for part in raw_targets.split(",") if part.strip()]
+        if not targets:
+            targets = ["gnome", "kde"]
+        self._settings.name = name
+        self._settings.author = author
+        self._settings.inherits = inherits
+        self._settings.targets = targets
+        self._metadata_confirmed = True
+        self._update_metadata_panel()
+
     def _apply_icon_changes(self) -> None:
         self._commit_icon_name()
 
@@ -545,6 +829,7 @@ class MainWindow(QMainWindow):
         if updated:
             self._settings = updated
             self._metadata_confirmed = True
+            self._update_metadata_panel()
 
     def _ensure_metadata(self) -> bool:
         if self._settings is None:
@@ -576,6 +861,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # pragma: no cover - filesystem errors
             QMessageBox.critical(self, "Export failed", str(exc))
             return
+        self._record_recent_project(target)
         QMessageBox.information(
             self,
             "Export complete",

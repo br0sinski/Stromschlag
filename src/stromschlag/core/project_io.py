@@ -8,6 +8,8 @@ import yaml
 
 from .models import IconDefinition, PackSettings
 
+_PROJECT_HEADER = "# Icon pack generated with Stromschlag - https://github.com/br0sinski/Stromschlag\n"
+
 
 def load_project(path: Path) -> Tuple[PackSettings, List[IconDefinition]]:
     """Load a Stromschlag project from disk and return settings plus icons."""
@@ -37,7 +39,13 @@ def load_project(path: Path) -> Tuple[PackSettings, List[IconDefinition]]:
     return settings, icons
 
 
-def save_project(path: Path, settings: PackSettings, icons: Iterable[IconDefinition]) -> None:
+def save_project(
+    path: Path,
+    settings: PackSettings,
+    icons: Iterable[IconDefinition],
+    *,
+    include_categories: bool = True,
+) -> None:
     """Persist the project as a YAML document."""
     payload = {
         "name": settings.name,
@@ -52,7 +60,7 @@ def save_project(path: Path, settings: PackSettings, icons: Iterable[IconDefinit
                 "name": icon.name,
                 **(
                     {"category": icon.category}
-                    if icon.category
+                    if include_categories and icon.category
                     else {}
                 ),
                 **(
@@ -65,4 +73,5 @@ def save_project(path: Path, settings: PackSettings, icons: Iterable[IconDefinit
         ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    yaml_text = yaml.safe_dump(payload, sort_keys=False)
+    path.write_text(f"{_PROJECT_HEADER}{yaml_text}")

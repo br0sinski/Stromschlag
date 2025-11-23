@@ -6,12 +6,13 @@ from pathlib import Path
 from shutil import copy2
 from typing import Dict, Iterable, List
 from .models import IconDefinition, PackSettings
+from .project_io import save_project
 from .utils import ensure_directory, icon_filename
 
 
 @dataclass(slots=True)
 class _ThemeTarget:
-    root: Path
+    theme_root: Path
     size_dirs: Dict[int, Path]
     scalable_dir: Path
 
@@ -36,6 +37,7 @@ def export_icon_pack(settings: PackSettings, icons: Iterable[IconDefinition]) ->
         filename = icon_filename(icon.name)
         _copy_source_asset(icon.source_path, filename, targets)
 
+    _write_project_descriptors(pack_root, targets, settings, icon_list)
     return pack_root
 
 
@@ -78,6 +80,36 @@ def _copy_source_asset(source: Path | None, filename: str, targets: List[_ThemeT
                 copy2(source, directory / filename)
             copy2(source, target.scalable_dir / filename)
 
+
+def _write_project_descriptors(
+    pack_root: Path,
+    targets: List[_ThemeTarget],
+    settings: PackSettings,
+    icons: Iterable[IconDefinition],
+) -> None:
+    icon_snapshot = [
+        IconDefinition(name=icon.name, source_path=icon.source_path, category=icon.category)
+        for icon in icons
+    ]
+    save_project(pack_root / "stromschlag.yaml", settings, icon_snapshot, include_categories=False)
+
+    for target in targets:
+        themed_icons = [
+            IconDefinition(
+                name=icon.name,
+                source_path=(target.scalable_dir / icon_filename(icon.name))
+                if icon.has_source_asset()
+                else None,
+                category=icon.category,
+            )
+            for icon in icons
+        ]
+        save_project(
+            target.theme_root / "stromschlag.yaml",
+            settings,
+            themed_icons,
+            include_categories=False,
+        )
 
 def _write_index_theme(
     theme_root: Path, settings: PackSettings, directories: List[str], comment: str

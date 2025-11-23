@@ -29,6 +29,8 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     ]
 
     save_project(path, settings, icons)
+    contents = path.read_text().splitlines()
+    assert contents[0].startswith("# Icon pack generated with Stromschlag")
     loaded_settings, loaded_icons = load_project(path)
 
     assert loaded_settings.name == settings.name
