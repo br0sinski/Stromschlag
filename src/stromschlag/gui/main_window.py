@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.exporters import export_icon_pack
+from ..core.exporters import ExportResult, export_icon_pack, install_icon_pack
 from ..core.models import IconDefinition, PackSettings
 from ..core.project_io import load_project
 from ..core.theme_loader import (
@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
         self._settings: PackSettings | None = None
         self._metadata_confirmed = False
         self._project_loaded = False
+        self._last_export_result: ExportResult | None = None
         self._settings_store = QSettings("Stromschlag", "Stromschlag")
         self._recent_projects: List[str] = []
         self._recent_menu: QMenu | None = None
@@ -286,6 +287,12 @@ class MainWindow(QMainWindow):
         self._export_action = QAction("Export Icon Theme…", self)
         self._export_action.triggered.connect(self._export_pack)
 
+        self._install_user_action = QAction("Install for Current User", self)
+        self._install_user_action.triggered.connect(self._install_pack_local)
+
+        self._install_system_action = QAction("Install System-wide", self)
+        self._install_system_action.triggered.connect(self._install_pack_system)
+
     def _create_menus(self) -> None:
         menubar: QMenuBar = self.menuBar()
         file_menu = menubar.addMenu("&File")
@@ -294,6 +301,9 @@ class MainWindow(QMainWindow):
         self._recent_menu = file_menu.addMenu("Open Recent")
         file_menu.addSeparator()
         file_menu.addAction(self._export_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._install_user_action)
+        file_menu.addAction(self._install_system_action)
 
         options_menu = menubar.addMenu("&Options")
         options_menu.addAction(self._metadata_action)
@@ -451,6 +461,7 @@ class MainWindow(QMainWindow):
     # Project lifecycle
     def _show_placeholder(self) -> None:
         self._project_loaded = False
+        self._last_export_result = None
         self._stack.setCurrentWidget(self._placeholder_view)
         self._update_action_states()
         self._icon_tree.clear()
@@ -477,7 +488,12 @@ class MainWindow(QMainWindow):
 
     def _update_action_states(self) -> None:
         state = self._project_loaded
-        for action in (self._metadata_action, self._export_action):
+        for action in (
+            self._metadata_action,
+            self._export_action,
+            self._install_user_action,
+            self._install_system_action,
+        ):
             action.setEnabled(state)
 
     def _new_project(self) -> None:
@@ -500,6 +516,7 @@ class MainWindow(QMainWindow):
         )
         self._metadata_confirmed = False
         self._icons = icons
+        self._last_export_result = None
         self._show_project_view()
         self._announce_theme_source(source_theme)
 
@@ -532,6 +549,7 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._metadata_confirmed = True
         self._icons = icons
+        self._last_export_result = None
         self._show_project_view()
         self._record_recent_project(path.parent)
 
@@ -551,6 +569,7 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._metadata_confirmed = False
         self._icons = icons
+        self._last_export_result = None
         self._show_project_view()
         self._record_recent_project(directory)
         self.statusBar().showMessage(
@@ -846,27 +865,73 @@ class MainWindow(QMainWindow):
     def _export_pack(self) -> None:
         if not self._project_loaded:
             return
-        if not self._ensure_metadata():
+        export_result = self._perform_export(prompt_for_directory=True)
+        if export_result is None:
             return
-        if not self._icons:
-            QMessageBox.information(self, "Add icons", "Create at least one icon first.")
-            return
-        export_dir = self._prompt_export_directory()
-        if export_dir is None:
-            return
-        assert self._settings is not None  # satisfied by _ensure_metadata
-        self._settings.output_dir = export_dir
-        try:
-            target = export_icon_pack(self._settings, self._icons)
-        except Exception as exc:  # pragma: no cover - filesystem errors
-            QMessageBox.critical(self, "Export failed", str(exc))
-            return
-        self._record_recent_project(target)
         QMessageBox.information(
             self,
             "Export complete",
-            f"Icon theme saved to {target}"
+            f"Icon theme saved to {export_result.pack_root}"
         )
+
+    def _install_pack_local(self) -> None:
+        self._install_pack(
+            title="Install for current user",
+            install_roots=[
+                Path.home() / ".local/share/icons",
+                Path.home() / ".icons",
+            ],
+        )
+
+    def _install_pack_system(self) -> None:
+        self._install_pack(
+            title="Install system-wide",
+            install_roots=[
+                Path("/usr/share/icons"),
+                Path("/usr/local/share/icons"),
+            ],
+        )
+
+    def _install_pack(self, title: str, install_roots: List[Path]) -> None:
+        if not self._project_loaded:
+            return
+        export_result = self._perform_export(prompt_for_directory=False)
+        if export_result is None:
+            return
+        installed, failures = install_icon_pack(export_result, install_roots)
+        message: List[str] = []
+        if installed:
+            message.append("Installed to:")
+            message.extend(f" • {path}" for path in installed)
+        if failures:
+            if message:
+                message.append("")
+            message.append("Install errors:")
+            message.extend(f" • {path}: {error}" for path, error in failures)
+        if not message:
+            message = ["No destinations were available for installation."]
+        QMessageBox.information(self, title, "\n".join(message))
+
+    def _perform_export(self, *, prompt_for_directory: bool) -> ExportResult | None:
+        if not self._ensure_metadata():
+            return None
+        if not self._icons:
+            QMessageBox.information(self, "Add icons", "Create at least one icon first.")
+            return None
+        assert self._settings is not None  # satisfied by _ensure_metadata
+        if prompt_for_directory:
+            export_dir = self._prompt_export_directory()
+            if export_dir is None:
+                return None
+            self._settings.output_dir = export_dir
+        try:
+            export_result = export_icon_pack(self._settings, self._icons)
+        except Exception as exc:  # pragma: no cover - filesystem errors
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return None
+        self._record_recent_project(export_result.pack_root)
+        self._last_export_result = export_result
+        return export_result
 
     def _prompt_export_directory(self) -> Path | None:
         if self._settings is None:

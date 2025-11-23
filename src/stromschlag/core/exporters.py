@@ -3,24 +3,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from shutil import copy2
-from typing import Dict, Iterable, List
+from shutil import copy2, copytree
+from typing import Dict, Iterable, List, Sequence, Tuple
 from .models import IconDefinition, PackSettings
 from .project_io import save_project
 from .utils import ensure_directory, icon_filename
 
 
 @dataclass(slots=True)
-class _ThemeTarget:
+class ThemeTarget:
+    desktop: str
     theme_root: Path
     size_dirs: Dict[int, Path]
     scalable_dir: Path
 
 
-def export_icon_pack(settings: PackSettings, icons: Iterable[IconDefinition]) -> Path:
+@dataclass(slots=True)
+class ExportResult:
+    pack_root: Path
+    theme_name: str
+    theme_slug: str
+    targets: List[ThemeTarget]
+
+
+def export_icon_pack(settings: PackSettings, icons: Iterable[IconDefinition]) -> ExportResult:
     """Export icons for the configured desktop targets (GTK/GNOME, KDE/Qt).
 
-    Returns the path to the root export directory.
+    Returns an :class:`ExportResult` describing the exported directories.
     """
 
     icon_list = list(icons)
@@ -38,11 +47,16 @@ def export_icon_pack(settings: PackSettings, icons: Iterable[IconDefinition]) ->
         _copy_source_asset(icon.source_path, filename, targets)
 
     _write_project_descriptors(pack_root, targets, settings, icon_list)
-    return pack_root
+    return ExportResult(
+        pack_root=pack_root,
+        theme_name=settings.name,
+        theme_slug=settings.theme_slug(),
+        targets=targets,
+    )
 
 
-def _prepare_theme_targets(root: Path, settings: PackSettings) -> List[_ThemeTarget]:
-    themes: List[_ThemeTarget] = []
+def _prepare_theme_targets(root: Path, settings: PackSettings) -> List[ThemeTarget]:
+    themes: List[ThemeTarget] = []
     comment = settings.theme_comment()
     desired = [target for target in settings.targets if target in {"gnome", "kde"}]
     if not desired:
@@ -64,11 +78,13 @@ def _prepare_theme_targets(root: Path, settings: PackSettings) -> List[_ThemeTar
         directories.append("scalable/apps")
 
         _write_index_theme(theme_root, settings, directories, comment)
-        themes.append(_ThemeTarget(theme_root, size_dirs, scalable))
+        themes.append(
+            ThemeTarget(desktop=desktop, theme_root=theme_root, size_dirs=size_dirs, scalable_dir=scalable)
+        )
     return themes
 
 
-def _copy_source_asset(source: Path | None, filename: str, targets: List[_ThemeTarget]) -> None:
+def _copy_source_asset(source: Path | None, filename: str, targets: List[ThemeTarget]) -> None:
     if source is None:
         return
     suffix = source.suffix.lower()
@@ -83,7 +99,7 @@ def _copy_source_asset(source: Path | None, filename: str, targets: List[_ThemeT
 
 def _write_project_descriptors(
     pack_root: Path,
-    targets: List[_ThemeTarget],
+    targets: List[ThemeTarget],
     settings: PackSettings,
     icons: Iterable[IconDefinition],
 ) -> None:
@@ -110,6 +126,49 @@ def _write_project_descriptors(
             themed_icons,
             include_categories=False,
         )
+
+
+_DEFAULT_ICON_DIRS: Tuple[Path, ...] = (
+    Path.home() / ".local/share/icons",
+    Path.home() / ".icons",
+    Path("/usr/share/icons"),
+    Path("/usr/local/share/icons"),
+)
+
+
+def install_icon_pack(
+    result: ExportResult,
+    install_roots: Sequence[Path] | None = None,
+) -> Tuple[List[Path], List[Tuple[Path, str]]]:
+    """Copy exported themes into standard icon directories.
+
+    Returns (successful_paths, failures) where failures include error messages.
+    """
+
+    successes: List[Path] = []
+    failures: List[Tuple[Path, str]] = []
+    roots = install_roots or _DEFAULT_ICON_DIRS
+    normalized = [Path(root).expanduser() for root in roots]
+    multi = len(result.targets) > 1
+
+    for root in normalized:
+        try:
+            ensure_directory(root)
+        except OSError as exc:
+            failures.append((root, str(exc)))
+            continue
+
+        for target in result.targets:
+            suffix = f"-{target.desktop}" if multi else ""
+            destination = root / f"{result.theme_slug}{suffix}"
+            try:
+                copytree(target.theme_root, destination, dirs_exist_ok=True)
+                successes.append(destination)
+            except OSError as exc:
+                failures.append((destination, str(exc)))
+
+    return successes, failures
+
 
 def _write_index_theme(
     theme_root: Path, settings: PackSettings, directories: List[str], comment: str
