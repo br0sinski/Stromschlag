@@ -71,4 +71,3 @@ def test_list_installed_themes(tmp_path: Path) -> None:
     assert themes
     assert isinstance(themes[0], ThemeCandidate)
     assert themes[0].name == "sample"
-```}

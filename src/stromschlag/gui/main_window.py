@@ -4,9 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, List
 
-from PIL.ImageQt import ImageQt
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon, QImage, QPixmap
+from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -34,7 +33,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.exporters import export_icon_pack
-from ..core.generator import generate_icon_raster
 from ..core.models import IconDefinition, PackSettings
 from ..core.project_io import load_project, save_project
 from ..core.theme_loader import (
@@ -361,7 +359,9 @@ class MainWindow(QMainWindow):
                 self._category_nodes[category_key] = parent
             child = QTreeWidgetItem([icon.name])
             child.setData(0, Qt.ItemDataRole.UserRole, idx)
-            child.setIcon(0, QIcon(self._icon_pixmap(icon, 32)))
+            pixmap = self._icon_pixmap(icon, 32)
+            if pixmap is not None:
+                child.setIcon(0, QIcon(pixmap))
             parent.addChild(child)
             self._row_to_item[idx] = child
 
@@ -407,9 +407,6 @@ class MainWindow(QMainWindow):
         name = f"Icon {len(self._icons) + 1}"
         icon = IconDefinition(
             name=name,
-            glyph=name[0],
-            background="#1d3557",
-            foreground="#f1faee",
             category="custom",
         )
         self._icons.append(icon)
@@ -464,11 +461,12 @@ class MainWindow(QMainWindow):
         icon = self._icons[row]
         self._load_icon_into_form(icon)
         self._set_icon_form_enabled(True)
-        try:
-            pixmap = self._icon_pixmap(icon, 360)
-        except Exception as exc:  # pragma: no cover - preview errors
-            self._preview_label.setText(f"Preview error: {exc}")
+        pixmap = self._icon_pixmap(icon, 360)
+        if pixmap is None:
+            self._preview_label.setPixmap(QPixmap())
+            self._preview_label.setText("No artwork selected for this icon.")
             return
+        self._preview_label.setText("")
         self._preview_label.setPixmap(pixmap)
 
     def _load_icon_into_form(self, icon: IconDefinition) -> None:
@@ -529,21 +527,14 @@ class MainWindow(QMainWindow):
         if icon.name == name:
             return
         icon.name = name
-        if not icon.source_path and name:
-            icon.glyph = name[0]
         self._refresh_icon_list(row)
 
-    def _icon_pixmap(self, icon: IconDefinition, size: int) -> QPixmap:
+    def _icon_pixmap(self, icon: IconDefinition, size: int) -> QPixmap | None:
         if icon.source_path and icon.source_path.exists():
             pixmap = QIcon(str(icon.source_path)).pixmap(size, size)
             if not pixmap.isNull():
                 return pixmap
-        return self._render_icon(icon, size)
-
-    def _render_icon(self, icon: IconDefinition, size: int) -> QPixmap:
-        settings = self._settings or PackSettings(name="Preview", author="Preview", base_sizes=[size])
-        image = generate_icon_raster(icon, settings, sizes=[size])[size]
-        return QPixmap.fromImage(QImage(ImageQt(image)))
+        return None
 
     # ------------------------------------------------------------------
     # Metadata + export

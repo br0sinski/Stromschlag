@@ -26,15 +26,10 @@ def load_project(path: Path) -> Tuple[PackSettings, List[IconDefinition]]:
     icons: List[IconDefinition] = []
     for index, payload in enumerate(data.get("icons", []), start=1):
         name = payload.get("name", f"Icon {index}")
-        glyph_source = payload.get("glyph") or name or "?"
-        glyph = glyph_source[0]
         source_path_str = payload.get("source_path")
         icons.append(
             IconDefinition(
                 name=name,
-                glyph=glyph,
-                background=payload.get("background", "#1d3557"),
-                foreground=payload.get("foreground", "#f1faee"),
                 source_path=Path(source_path_str).expanduser() if source_path_str else None,
                 category=payload.get("category"),
             )
@@ -55,9 +50,6 @@ def save_project(path: Path, settings: PackSettings, icons: Iterable[IconDefinit
         "icons": [
             {
                 "name": icon.name,
-                "glyph": icon.glyph,
-                "background": icon.background,
-                "foreground": icon.foreground,
                 **(
                     {"category": icon.category}
                     if icon.category

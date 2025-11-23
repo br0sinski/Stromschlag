@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 
 from .. import __version__
-from .utils import ensure_hex, slugify
+from .utils import slugify
 
 
 @dataclass(slots=True)
@@ -14,17 +14,8 @@ class IconDefinition:
     """Represents a single icon configuration."""
 
     name: str
-    glyph: str
-    background: str
-    foreground: str
     source_path: Path | None = None
     category: str | None = None
-
-    def normalized_background(self) -> str:
-        return ensure_hex(self.background)
-
-    def normalized_foreground(self) -> str:
-        return ensure_hex(self.foreground)
 
     def has_source_asset(self) -> bool:
         return self.source_path is not None and self.source_path.exists()

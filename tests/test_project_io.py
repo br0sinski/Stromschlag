@@ -19,17 +19,11 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     icons = [
         IconDefinition(
             name="Folder",
-            glyph="F",
-            background="#123456",
-            foreground="#ffffff",
             source_path=source_file,
             category="apps",
         ),
         IconDefinition(
             name="Gear",
-            glyph="G",
-            background="#654321",
-            foreground="#eeeeee",
             category="actions",
         ),
     ]
@@ -43,7 +37,6 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     assert loaded_settings.targets == ["kde"]
     assert len(loaded_icons) == 2
     assert loaded_icons[0].name == "Folder"
-    assert loaded_icons[1].glyph == "G"
     assert loaded_icons[0].source_path == source_file
     assert loaded_icons[0].category == "apps"
     assert loaded_icons[1].category == "actions"

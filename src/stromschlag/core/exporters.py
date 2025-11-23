@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from shutil import copy2
 from typing import Dict, Iterable, List
-
-from .generator import generate_icon_raster
 from .models import IconDefinition, PackSettings
 from .utils import ensure_directory, icon_filename
 
@@ -32,20 +30,11 @@ def export_icon_pack(settings: PackSettings, icons: Iterable[IconDefinition]) ->
     targets = _prepare_theme_targets(pack_root, settings)
 
     for icon in icon_list:
-        filename = icon_filename(icon.name)
-        if icon.has_source_asset():
-            _copy_source_asset(icon.source_path, filename, targets)
+        if not icon.has_source_asset():
             continue
 
-        rasters = generate_icon_raster(icon, settings)
-        largest_size = max(rasters)
-        largest_image = rasters[largest_size]
-
-        for target in targets:
-            for size, image in rasters.items():
-                destination = target.size_dirs[size] / filename
-                image.save(destination)
-            largest_image.save(target.scalable_dir / filename)
+        filename = icon_filename(icon.name)
+        _copy_source_asset(icon.source_path, filename, targets)
 
     return pack_root
 

@@ -1,15 +1,12 @@
 """Tests for exporter behavior."""
 from pathlib import Path
 
-from PIL import Image
-
 from stromschlag.core.exporters import export_icon_pack
 from stromschlag.core.models import IconDefinition, PackSettings
 
 
 def _make_icon_file(path: Path, color: str) -> None:
-    image = Image.new("RGBA", (32, 32), color)
-    image.save(path)
+    path.write_bytes(color.encode("ascii"))
 
 
 def test_export_copies_source_assets(tmp_path: Path) -> None:
@@ -20,9 +17,6 @@ def test_export_copies_source_assets(tmp_path: Path) -> None:
 
     icon = IconDefinition(
         name="folder",
-        glyph="F",
-        background="#000000",
-        foreground="#ffffff",
         source_path=source,
     )
 
@@ -33,22 +27,18 @@ def test_export_copies_source_assets(tmp_path: Path) -> None:
     assert kde_icon.read_bytes() == source.read_bytes()
 
 
-def test_export_renders_when_missing_source(tmp_path: Path) -> None:
+def test_export_skips_icons_without_source(tmp_path: Path) -> None:
     build_dir = tmp_path / "build"
     settings = PackSettings(name="My Pack", author="Tester", base_sizes=[32], output_dir=build_dir)
 
     icon = IconDefinition(
         name="terminal",
-        glyph="T",
-        background="#123456",
-        foreground="#abcdef",
     )
 
     target = export_icon_pack(settings, [icon])
 
     kde_icon = target / "kde" / settings.name / "32x32" / "apps" / "terminal.png"
-    assert kde_icon.exists()
-    assert kde_icon.stat().st_size > 0
+    assert not kde_icon.exists()
 
 
 def test_export_honors_selected_targets(tmp_path: Path) -> None:
@@ -63,10 +53,9 @@ def test_export_honors_selected_targets(tmp_path: Path) -> None:
 
     icon = IconDefinition(
         name="app",
-        glyph="A",
-        background="#222222",
-        foreground="#ffffff",
+        source_path=tmp_path / "app.png",
     )
+    _make_icon_file(icon.source_path, "#00ff00")
 
     target = export_icon_pack(settings, [icon])
 

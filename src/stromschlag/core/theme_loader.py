@@ -29,17 +29,6 @@ _ICON_SUBDIRS = (
     "mimetypes",
 )
 
-_COLOR_PALETTE = [
-    "#4c6ef5",
-    "#6741d9",
-    "#f59f00",
-    "#0c8599",
-    "#d6336c",
-    "#343a40",
-    "#099268",
-    "#c92a2a",
-]
-
 
 @dataclass(slots=True)
 class BlueprintLoadResult:
@@ -148,29 +137,11 @@ def _collect_icon_entries(theme_root: Path, limit: int | None) -> List[Tuple[str
 
 
 def _build_icon_definitions(entries: Sequence[Tuple[str, Path, str]]) -> List[IconDefinition]:
-    icons: List[IconDefinition] = []
-    palette_size = len(_COLOR_PALETTE)
-    for index, (name, path, category) in enumerate(entries):
-        glyph = _derive_glyph(name)
-        background = _COLOR_PALETTE[index % palette_size]
-        foreground = "#1f1f1f" if index % palette_size == 2 else "#ffffff"
-        icons.append(
-            IconDefinition(
-                name=name,
-                glyph=glyph,
-                background=background,
-                foreground=foreground,
-                source_path=path,
-                category=category,
-            )
+    return [
+        IconDefinition(
+            name=name,
+            source_path=path,
+            category=category,
         )
-    return icons
-
-
-def _derive_glyph(name: str) -> str:
-    cleaned = name.strip().replace("_", "-")
-    for part in cleaned.split("-"):
-        part = part.strip()
-        if part:
-            return part[0].upper()
-    return "?"
+        for name, path, category in entries
+    ]
