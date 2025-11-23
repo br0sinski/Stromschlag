@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "GUI tool for crafting KDE Plasma and GNOME icon packs"
 readme = "README.md"
 authors = [
-  { name = "bastian" }
+  { name = "br0sinski" }
 ]
 requires-python = ">=3.11"
 dependencies = [
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://example.com/stromschlag"
+Homepage = "github.com/br0sinski/Stromschlag"
 
 [project.scripts]
 stromschlag = "stromschlag.app:main"
