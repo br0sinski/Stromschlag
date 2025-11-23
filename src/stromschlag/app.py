@@ -1,0 +1,17 @@
+"""Application entry point for Stromschlag."""
+from __future__ import annotations
+
+from PySide6.QtWidgets import QApplication
+
+from .gui.main_window import MainWindow
+
+
+def main() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.exec()
+
+
+if __name__ == "__main__":
+    main()
